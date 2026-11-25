@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>中国語テロップ＆単語 フラッシュカード</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <div class="header-title">
+        <h1>中国語 フラッシュカード</h1>
+        <p class="subtitle">テロップ（文章）と単語を、発音記号・カタカナ読み・品詞別で学習</p>
+      </div>
+
+      <div class="header-controls">
+        <!-- コンテンツ種別切替：単語モード / 文章モード -->
+        <div class="deck-switcher" role="group" aria-label="学習モード切替">
+          <button id="mode-word" class="deck-btn active">
+            単語モード <span id="badge-word-count" class="badge">0</span>
+          </button>
+          <button id="mode-sentence" class="deck-btn">
+            文章モード <span id="badge-sentence-count" class="badge">0</span>
+          </button>
+        </div>
+
+        <!-- 画面切替：学習 / 入力 -->
+        <nav class="mode-tabs" role="tablist">
+          <button id="tab-study" class="tab-btn active" role="tab" aria-selected="true">
+            学習する
+          </button>
+          <button id="tab-input" class="tab-btn" role="tab" aria-selected="false">
+            入力・編集
+          </button>
+        </nav>
+      </div>
+    </header>
+
+    <!-- 学習モード -->
+    <main id="view-study" class="view-section active">
+      <div id="empty-state" class="empty-state hidden">
+        <div class="empty-icon">📝</div>
+        <h2 id="empty-title">まだカードがありません</h2>
+        <p id="empty-desc">「入力・編集」タブから中国語と日本語訳を入力してカードを作成してください。</p>
+        <div class="empty-actions">
+          <button id="btn-go-input" class="btn btn-primary">データを入力する</button>
+          <button id="btn-load-sample-empty" class="btn btn-secondary">サンプルで試す</button>
+        </div>
+      </div>
+
+      <div id="study-workspace" class="study-workspace">
+        <!-- 単語モード用：品詞別フィルターバー -->
+        <div id="pos-filter-bar" class="pos-filter-bar">
+          <span class="pos-filter-label">品詞で絞る：</span>
+          <div class="pos-filter-buttons" role="group" aria-label="品詞フィルター">
+            <button class="pos-filter-btn active" data-pos="all">
+              すべて <span id="pos-count-all" class="pos-count">0</span>
+            </button>
+            <button class="pos-filter-btn" data-pos="動詞">
+              動詞 <span id="pos-count-verb" class="pos-count">0</span>
+            </button>
+            <button class="pos-filter-btn" data-pos="形容詞">
+              形容詞 <span id="pos-count-adj" class="pos-count">0</span>
+            </button>
+            <button class="pos-filter-btn" data-pos="名詞">
+              名詞 <span id="pos-count-noun" class="pos-count">0</span>
+            </button>
+            <button class="pos-filter-btn" data-pos="その他">
+              その他 <span id="pos-count-other" class="pos-count">0</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 学習コントロールバー -->
+        <div class="study-toolbar">
+          <div class="progress-info">
+            <span id="card-counter" class="counter-text">1 / 1</span>
+            <span id="mastered-counter" class="mastered-text">覚えた: 0</span>
+          </div>
+          <div class="toolbar-actions">
+            <label class="filter-toggle" title="発音記号（ピンイン）とカタカナを最初から表示します">
+              <input type="checkbox" id="chk-always-show-reading" />
+              <span>発音・カタカナを常時表示</span>
+            </label>
+            <label class="filter-toggle" title="「もう一度」または未習得のカードだけを表示">
+              <input type="checkbox" id="chk-unmastered-only" />
+              <span>未習得のみ</span>
+            </label>
+            <button id="btn-shuffle" class="btn btn-ghost btn-sm" title="カードの順番をシャッフル">
+              🔀 シャッフル
+            </button>
+            <button id="btn-reset-order" class="btn btn-ghost btn-sm" title="元の順番に戻す">
+              ↺ 元の順
+            </button>
+          </div>
+        </div>
+
+        <div class="progress-bar-track">
+          <div id="progress-bar-fill" class="progress-bar-fill" style="width: 0%"></div>
+        </div>
+
+        <!-- フラッシュカード本体 -->
+        <div id="flashcard" class="flashcard">
+          <div class="card-top-bar">
+            <div class="card-top-left">
+              <span id="card-mode-pill" class="mode-pill">単語モード</span>
+              <span id="card-pos-pill" class="pos-pill hidden">動詞</span>
+              <span id="card-status-pill" class="status-pill">未学習</span>
+            </div>
+            <button id="btn-speak" class="btn-icon" title="中国語を読み上げる (Aキー)" aria-label="中国語を読み上げる">
+              🔊 発音
+            </button>
+          </div>
+
+          <div class="card-content">
+            <div class="zh-section">
+              <div id="zh-label" class="lang-label">中国語（単語）</div>
+              <p id="card-zh" class="zh-text"></p>
+            </div>
+
+            <!-- 発音記号（ピンイン）・カタカナ読みエリア -->
+            <div id="reading-section" class="reading-section hidden">
+              <div id="card-pinyin" class="pinyin-text"></div>
+              <div id="card-katakana" class="katakana-text"></div>
+            </div>
+
+            <!-- 日本語訳エリア -->
+            <div id="ja-section" class="ja-section hidden">
+              <div class="divider"></div>
+              <div class="lang-label">日本語訳</div>
+              <p id="card-ja" class="ja-text"></p>
+            </div>
+          </div>
+
+          <div class="card-reveal-area">
+            <button id="btn-hint-reading" class="btn btn-secondary">
+              発音・カタカナを見る <span class="shortcut-hint">(H)</span>
+            </button>
+            <button id="btn-reveal" class="btn btn-reveal">
+              日本語訳を見る <span class="shortcut-hint">(Space)</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- カード下部の操作ボタン -->
+        <div class="study-controls">
+          <button id="btn-prev" class="btn btn-secondary nav-btn" title="前のカード (←キー)">
+            ← 前へ
+          </button>
+
+          <div class="learning-actions">
+            <button id="btn-again" class="btn btn-again" title="要復習としてマーク (1キー)">
+              もう一度 <span class="shortcut-hint">(1)</span>
+            </button>
+            <button id="btn-mastered" class="btn btn-mastered" title="覚えたとしてマーク (2キー)">
+              ✓ 覚えた！ <span class="shortcut-hint">(2)</span>
+            </button>
+          </div>
+
+          <button id="btn-next" class="btn btn-primary nav-btn" title="次のカード (→キー)">
+            次へ →
+          </button>
+        </div>
+
+        <p class="keyboard-guide">
+          ショートカット: <kbd>Space</kbd> 訳を表示 ／ <kbd>H</kbd> 発音・カタカナ ／ <kbd>←</kbd> <kbd>→</kbd> 前後移動 ／ <kbd>1</kbd> もう一度 ／ <kbd>2</kbd> 覚えた ／ <kbd>A</kbd> 音声
+        </p>
+      </div>
+    </main>
+
+    <!-- 入力・編集モード -->
+    <main id="view-input" class="view-section">
+      <!-- 単語モード入力パネル -->
+      <div id="panel-word-input" class="input-panel">
+        <div class="input-header">
+          <div>
+            <h2>単語・発音・カタカナ・品詞・日本語訳を一括入力</h2>
+            <p class="input-desc">
+              1行につき1単語として入力してください。品詞（動詞 / 形容詞 / 名詞 / その他）を設定すると品詞別に分けて学習できます。
+            </p>
+          </div>
+          <div class="input-header-actions">
+            <button id="btn-extract-from-sentences" class="btn btn-secondary btn-sm" title="文章モードのテロップから単語を切り出し、品詞付きでセットします">
+              ✨ 文章テロップから単語を抽出
+            </button>
+            <button id="btn-auto-fill-reading" class="btn btn-secondary btn-sm" title="辞書検索やピンイン→カタカナ変換で空欄を自動補完します">
+              🔄 発音・カタカナ・品詞を補完
+            </button>
+            <button id="btn-load-word-sample" class="btn btn-ghost btn-sm">サンプルを入れる</button>
+            <button id="btn-clear-word-inputs" class="btn btn-ghost btn-sm text-danger">クリア</button>
+          </div>
+        </div>
+
+        <div class="options-row">
+          <label class="checkbox-label">
+            <input type="checkbox" id="chk-word-ignore-empty" checked />
+            <span>空行を自動で詰めてペアにする</span>
+          </label>
+          <div id="word-line-match-status" class="line-match-status">
+            単語: 0行 ／ 発音: 0行 ／ カタカナ: 0行 ／ 品詞: 0行 ／ 訳: 0行
+          </div>
+        </div>
+
+        <div class="textareas-grid-5">
+          <div class="textarea-group">
+            <div class="textarea-label-row">
+              <label for="input-word-zh">中国語（単語）</label>
+              <span id="count-word-zh" class="line-count">0行</span>
+            </div>
+            <textarea
+              id="input-word-zh"
+              placeholder="例：&#10;觉得&#10;便宜&#10;洗手间&#10;不好意思"
+              spellcheck="false"
+            ></textarea>
+          </div>
+
+          <div class="textarea-group">
+            <div class="textarea-label-row">
+              <label for="input-word-pinyin">発音記号（ピンイン）</label>
+              <span id="count-word-pinyin" class="line-count">0行</span>
+            </div>
+            <textarea
+              id="input-word-pinyin"
+              placeholder="例：&#10;juéde&#10;piányi&#10;xǐshǒujiān&#10;bù hǎoyìsi"
+              spellcheck="false"
+            ></textarea>
+          </div>
+
+          <div class="textarea-group">
+            <div class="textarea-label-row">
+              <label for="input-word-katakana">カタカナ読み</label>
+              <span id="count-word-katakana" class="line-count">0行</span>
+            </div>
+            <textarea
+              id="input-word-katakana"
+              placeholder="例：&#10;ジュエダ&#10;ピエンイー&#10;シーショウジエン&#10;ブ ハオイース"
+              spellcheck="false"
+            ></textarea>
+          </div>
+
+          <div class="textarea-group">
+            <div class="textarea-label-row">
+              <label for="input-word-pos">品詞</label>
+              <span id="count-word-pos" class="line-count">0行</span>
+            </div>
+            <textarea
+              id="input-word-pos"
+              placeholder="例：&#10;動詞&#10;形容詞&#10;名詞&#10;その他"
+              spellcheck="false"
+            ></textarea>
+          </div>
+
+          <div class="textarea-group">
+            <div class="textarea-label-row">
+              <label for="input-word-ja">日本語訳</label>
+              <span id="count-word-ja" class="line-count">0行</span>
+            </div>
+            <textarea
+              id="input-word-ja"
+              placeholder="例：&#10;〜だと思う&#10;安い&#10;お手洗い&#10;すみません"
+              spellcheck="false"
+            ></textarea>
+          </div>
+        </div>
+
+        <div id="word-mismatch-warning" class="warning-banner hidden">
+          ⚠️ 単語と日本語訳の行数が一致していません。行番号を揃えると正確にペアになります。
+        </div>
+
+        <div class="input-footer">
+          <div class="saved-notice" id="word-saved-notice"></div>
+          <button id="btn-create-word-cards" class="btn btn-primary btn-lg">
+            この内容で単語カードを作成して学習へ →
+          </button>
+        </div>
+      </div>
+
+      <!-- 文章（テロップ）モード入力パネル -->
+      <div id="panel-sentence-input" class="input-panel hidden">
+        <div class="input-header">
+          <div>
+            <h2>文章（テロップ）と日本語訳を一括入力</h2>
+            <p class="input-desc">
+              1行につき1フレーズとして入力してください。入力したテロップから品詞ごとに単語を抽出することもできます。
+            </p>
+          </div>
+          <div class="input-header-actions">
+            <button id="btn-load-sentence-sample" class="btn btn-ghost btn-sm">サンプルを入れる</button>
+            <button id="btn-clear-sentence-inputs" class="btn btn-ghost btn-sm text-danger">クリア</button>
+          </div>
+        </div>
+
+        <div class="options-row">
+          <label class="checkbox-label">
+            <input type="checkbox" id="chk-sentence-ignore-empty" checked />
+            <span>空行を自動で詰めてペアにする</span>
+          </label>
+          <div id="sentence-line-match-status" class="line-match-status">
+            中国語: 0行 ／ 日本語: 0行
+          </div>
+        </div>
+
+        <div class="textareas-grid">
+          <div class="textarea-group">
+            <div class="textarea-label-row">
+              <label for="input-sentence-zh">中国語（テロップ）</label>
+              <span id="count-sentence-zh" class="line-count">0行</span>
+            </div>
+            <textarea
+              id="input-sentence-zh"
+              placeholder="例：&#10;你今天过得怎么样？&#10;我觉得这个主意不错。&#10;不好意思，请问洗手间在哪里？"
+              spellcheck="false"
+            ></textarea>
+          </div>
+
+          <div class="textarea-group">
+            <div class="textarea-label-row">
+              <label for="input-sentence-ja">日本語訳</label>
+              <span id="count-sentence-ja" class="line-count">0行</span>
+            </div>
+            <textarea
+              id="input-sentence-ja"
+              placeholder="例：&#10;今日はどう過ごしましたか？&#10;このアイデアは悪くないと思います。&#10;すみません、お手洗いはどこですか？"
+              spellcheck="false"
+            ></textarea>
+          </div>
+        </div>
+
+        <div id="sentence-mismatch-warning" class="warning-banner hidden">
+          ⚠️ 中国語と日本語の行数が一致していません。少ない方の行数に合わせてカードが作成されます。
+        </div>
+
+        <div class="input-footer">
+          <div class="saved-notice" id="sentence-saved-notice"></div>
+          <div class="footer-btn-group">
+            <button id="btn-send-to-word-extractor" class="btn btn-secondary">
+              ✨ このテロップから単語を抽出（品詞分け）
+            </button>
+            <button id="btn-create-sentence-cards" class="btn btn-primary btn-lg">
+              文章カードを作成して学習へ →
+            </button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="dict.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
