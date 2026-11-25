@@ -2,6 +2,154 @@
   const STORAGE_KEY = "zh_telop_flashcards_v2";
   const LEGACY_STORAGE_KEY = "zh_telop_flashcards_v1";
 
+  const GAS_TEMPLATE_CODE = `const SHEET_WORDS = "単語";
+const SHEET_SENTENCES = "文章";
+const WORD_HEADERS = ["中国語", "ピンイン", "カタカナ", "品詞", "日本語訳", "ステータス", "更新日時"];
+const SENTENCE_HEADERS = ["中国語", "日本語訳", "ステータス", "更新日時"];
+
+function getOrCreateSheet_(ss, name, headers) {
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    sheet.appendRow(headers);
+    sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setBackground("#eff6ff");
+    sheet.setFrozenRows(1);
+  } else if (sheet.getLastRow() === 0) {
+    sheet.appendRow(headers);
+    sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setBackground("#eff6ff");
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function statusToLabel_(status) {
+  if (status === "mastered") return "覚えた";
+  if (status === "again") return "要復習";
+  return "未学習";
+}
+
+function labelToStatus_(label) {
+  const s = String(label || "").trim();
+  if (s === "覚えた" || s === "mastered") return "mastered";
+  if (s === "要復習" || s === "もう一度" || s === "again") return "again";
+  return "new";
+}
+
+function jsonResponse_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function doGet(e) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const wordSheet = getOrCreateSheet_(ss, SHEET_WORDS, WORD_HEADERS);
+    const sentenceSheet = getOrCreateSheet_(ss, SHEET_SENTENCES, SENTENCE_HEADERS);
+    const words = [];
+    if (wordSheet.getLastRow() >= 2) {
+      const rows = wordSheet.getRange(2, 1, wordSheet.getLastRow() - 1, WORD_HEADERS.length).getValues();
+      for (const r of rows) {
+        const zh = String(r[0] || "").trim();
+        if (!zh) continue;
+        words.push({
+          zh,
+          pinyin: String(r[1] || "").trim(),
+          katakana: String(r[2] || "").trim(),
+          pos: String(r[3] || "その他").trim() || "その他",
+          ja: String(r[4] || "").trim(),
+          status: labelToStatus_(r[5]),
+          updatedAt: Number(r[6]) || 0
+        });
+      }
+    }
+    const sentences = [];
+    if (sentenceSheet.getLastRow() >= 2) {
+      const rows = sentenceSheet.getRange(2, 1, sentenceSheet.getLastRow() - 1, SENTENCE_HEADERS.length).getValues();
+      for (const r of rows) {
+        const zh = String(r[0] || "").trim();
+        if (!zh) continue;
+        sentences.push({
+          zh,
+          ja: String(r[1] || "").trim(),
+          status: labelToStatus_(r[2]),
+          updatedAt: Number(r[3]) || 0
+        });
+      }
+    }
+    return jsonResponse_({ ok: true, words, sentences });
+  } catch (err) {
+    return jsonResponse_({ ok: false, error: err.message });
+  }
+}
+
+function doPost(e) {
+  try {
+    const payload = JSON.parse((e && e.postData && e.postData.contents) || "{}");
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const wordSheet = getOrCreateSheet_(ss, SHEET_WORDS, WORD_HEADERS);
+    const sentenceSheet = getOrCreateSheet_(ss, SHEET_SENTENCES, SENTENCE_HEADERS);
+
+    if (payload.action === "updateStatus") {
+      const isWord = payload.type === "word";
+      const sheet = isWord ? wordSheet : sentenceSheet;
+      const statusCol = isWord ? 6 : 3;
+      const updatedCol = isWord ? 7 : 4;
+      const lastRow = sheet.getLastRow();
+      let foundRow = -1;
+      if (lastRow >= 2) {
+        const zhValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+        for (let i = 0; i < zhValues.length; i++) {
+          if (String(zhValues[i][0] || "").trim() === String(payload.zh || "").trim()) {
+            foundRow = i + 2;
+            break;
+          }
+        }
+      }
+      const label = statusToLabel_(payload.status);
+      const updatedAt = Number(payload.updatedAt) || Date.now();
+      if (foundRow !== -1) {
+        sheet.getRange(foundRow, statusCol).setValue(label);
+        sheet.getRange(foundRow, updatedCol).setValue(updatedAt);
+      } else if (payload.card) {
+        const c = payload.card;
+        if (isWord) {
+          sheet.appendRow([c.zh || "", c.pinyin || "", c.katakana || "", c.pos || "その他", c.ja || "", label, updatedAt]);
+        } else {
+          sheet.appendRow([c.zh || "", c.ja || "", label, updatedAt]);
+        }
+      }
+      return jsonResponse_({ ok: true, updated: true });
+    }
+
+    if (Array.isArray(payload.words)) {
+      if (wordSheet.getLastRow() >= 2) {
+        wordSheet.getRange(2, 1, wordSheet.getLastRow() - 1, WORD_HEADERS.length).clearContent();
+      }
+      if (payload.words.length > 0) {
+        const rows = payload.words.map((w) => [
+          w.zh || "", w.pinyin || "", w.katakana || "", w.pos || "その他", w.ja || "",
+          statusToLabel_(w.status), Number(w.updatedAt) || Date.now()
+        ]);
+        wordSheet.getRange(2, 1, rows.length, WORD_HEADERS.length).setValues(rows);
+      }
+    }
+
+    if (Array.isArray(payload.sentences)) {
+      if (sentenceSheet.getLastRow() >= 2) {
+        sentenceSheet.getRange(2, 1, sentenceSheet.getLastRow() - 1, SENTENCE_HEADERS.length).clearContent();
+      }
+      if (payload.sentences.length > 0) {
+        const rows = payload.sentences.map((s) => [
+          s.zh || "", s.ja || "", statusToLabel_(s.status), Number(s.updatedAt) || Date.now()
+        ]);
+        sentenceSheet.getRange(2, 1, rows.length, SENTENCE_HEADERS.length).setValues(rows);
+      }
+    }
+    return jsonResponse_({ ok: true, saved: true });
+  } catch (err) {
+    return jsonResponse_({ ok: false, error: err.message });
+  }
+}`;
+
   const SAMPLE_SENTENCES = {
     zh: [
       "你今天过得怎么样？",
@@ -27,100 +175,48 @@
 
   const SAMPLE_WORDS = {
     zh: [
-      "觉得",
-      "请问",
-      "担心",
-      "准备",
-      "不错",
-      "便宜",
-      "开心",
-      "重要",
-      "主意",
-      "洗手间",
-      "时间",
-      "朋友",
-      "不好意思",
-      "马上",
-      "最近"
+      "觉得", "请问", "担心", "准备",
+      "不错", "便宜", "开心", "重要",
+      "主意", "洗手间", "时间", "朋友",
+      "不好意思", "马上", "最近"
     ].join("\n"),
     pinyin: [
-      "juéde",
-      "qǐngwèn",
-      "dānxīn",
-      "zhǔnbèi",
-      "bùcuò",
-      "piányi",
-      "kāixīn",
-      "zhòngyào",
-      "zhǔyì",
-      "xǐshǒujiān",
-      "shíjiān",
-      "péngyou",
-      "bù hǎoyìsi",
-      "mǎshàng",
-      "zuìjìn"
+      "juéde", "qǐngwèn", "dānxīn", "zhǔnbèi",
+      "bùcuò", "piányi", "kāixīn", "zhòngyào",
+      "zhǔyì", "xǐshǒujiān", "shíjiān", "péngyou",
+      "bù hǎoyìsi", "mǎshàng", "zuìjìn"
     ].join("\n"),
     katakana: [
-      "ジュエダ",
-      "チンウェン",
-      "ダンシン",
-      "ジュンベイ",
-      "ブーツオ",
-      "ピエンイー",
-      "カイシン",
-      "ジョンヤオ",
-      "ジューイー",
-      "シーショウジエン",
-      "シージエン",
-      "ポンヨウ",
-      "ブ ハオイース",
-      "マーシャン",
-      "ズイジン"
+      "ジュエダ", "チンウェン", "ダンシン", "ジュンベイ",
+      "ブーツオ", "ピエンイー", "カイシン", "ジョンヤオ",
+      "ジューイー", "シーショウジエン", "シージエン", "ポンヨウ",
+      "ブ ハオイース", "マーシャン", "ズイジン"
     ].join("\n"),
     pos: [
-      "動詞",
-      "動詞",
-      "動詞",
-      "動詞",
-      "形容詞",
-      "形容詞",
-      "形容詞",
-      "形容詞",
-      "名詞",
-      "名詞",
-      "名詞",
-      "名詞",
-      "その他",
-      "その他",
-      "名詞"
+      "動詞", "動詞", "動詞", "動詞",
+      "形容詞", "形容詞", "形容詞", "形容詞",
+      "名詞", "名詞", "名詞", "名詞",
+      "その他", "その他", "名詞"
     ].join("\n"),
     ja: [
-      "〜だと思う・感じる",
-      "すみませんが（お尋ねします）",
-      "心配する",
-      "準備する",
-      "悪くない・なかなか良い",
-      "安い",
-      "嬉しい・楽しい",
-      "重要だ",
-      "アイデア・考え",
-      "お手洗い・トイレ",
-      "時間",
-      "友達",
-      "すみません・申し訳ない",
-      "すぐに・もうすぐ",
-      "最近"
+      "〜だと思う・感じる", "すみませんが（お尋ねします）", "心配する", "準備する",
+      "悪くない・なかなか良い", "安い", "嬉しい・楽しい", "重要だ",
+      "アイデア・考え", "お手洗い・トイレ", "時間", "友達",
+      "すみません・申し訳ない", "すぐに・もうすぐ", "最近"
     ].join("\n")
   };
 
   // App State
   let activeMode = "word"; // "word" | "sentence"
-  let activeTab = "study"; // "study" | "input"
-  let activePosFilter = "all"; // "all" | "動詞" | "形容詞" | "名詞" | "その他"
+  let activeTab = "study"; // "study" | "input" | "sync"
+  let activePosFilter = "all";
+  let gasUrl = "";
+  let autoSync = true;
+  let alwaysShowReading = false;
 
   const decks = {
     word: {
-      cards: [], // { id, zh, pinyin, katakana, pos, ja, status }
+      cards: [], // { id, zh, pinyin, katakana, pos, ja, status, updatedAt }
       deckIndices: [],
       currentPos: 0,
       isRevealed: false,
@@ -128,7 +224,7 @@
       unmasteredOnly: false
     },
     sentence: {
-      cards: [], // { id, zh, ja, status }
+      cards: [], // { id, zh, ja, status, updatedAt }
       deckIndices: [],
       currentPos: 0,
       isRevealed: false,
@@ -137,8 +233,6 @@
     }
   };
 
-  let alwaysShowReading = false;
-
   // DOM Elements - Header
   const modeWordBtn = document.getElementById("mode-word");
   const modeSentenceBtn = document.getElementById("mode-sentence");
@@ -146,8 +240,11 @@
   const badgeSentenceCount = document.getElementById("badge-sentence-count");
   const tabStudy = document.getElementById("tab-study");
   const tabInput = document.getElementById("tab-input");
+  const tabSync = document.getElementById("tab-sync");
+  const syncDot = document.getElementById("sync-dot");
   const viewStudy = document.getElementById("view-study");
   const viewInput = document.getElementById("view-input");
+  const viewSync = document.getElementById("view-sync");
 
   // DOM Elements - Study
   const emptyState = document.getElementById("empty-state");
@@ -164,6 +261,8 @@
 
   const cardCounter = document.getElementById("card-counter");
   const masteredCounter = document.getElementById("mastered-counter");
+  const studySyncBadge = document.getElementById("study-sync-badge");
+  const btnQuickSync = document.getElementById("btn-quick-sync");
   const progressBarFill = document.getElementById("progress-bar-fill");
   const chkAlwaysShowReading = document.getElementById("chk-always-show-reading");
   const chkUnmasteredOnly = document.getElementById("chk-unmastered-only");
@@ -228,23 +327,54 @@
   const btnSendToWordExtractor = document.getElementById("btn-send-to-word-extractor");
   const btnCreateSentenceCards = document.getElementById("btn-create-sentence-cards");
 
+  // DOM Elements - Sync
+  const syncStatusPill = document.getElementById("sync-status-pill");
+  const inputGasUrl = document.getElementById("input-gas-url");
+  const btnSaveGasUrl = document.getElementById("btn-save-gas-url");
+  const chkAutoSync = document.getElementById("chk-auto-sync");
+  const btnSyncBidirectional = document.getElementById("btn-sync-bidirectional");
+  const btnSyncPull = document.getElementById("btn-sync-pull");
+  const btnSyncPush = document.getElementById("btn-sync-push");
+  const syncLog = document.getElementById("sync-log");
+  const btnCopyShareUrl = document.getElementById("btn-copy-share-url");
+  const shareUrlNotice = document.getElementById("share-url-notice");
+  const btnCopyGasCode = document.getElementById("btn-copy-gas-code");
+  const gasCopyNotice = document.getElementById("gas-copy-notice");
+
   // --- Initialization ---
   function init() {
     loadFromStorage();
+    const urlSyncParam = new URLSearchParams(window.location.search).get("sync");
+    if (urlSyncParam && urlSyncParam.startsWith("https://")) {
+      gasUrl = urlSyncParam.trim();
+      inputGasUrl.value = gasUrl;
+      saveToStorage();
+      // URLから ?sync=... を消してスッキリさせる
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+
     bindEvents();
     updateWordInputStats();
     updateSentenceInputStats();
     rebuildDeck("word", false);
     rebuildDeck("sentence", false);
+    updateSyncUI();
     updateModeUI();
+
+    if (gasUrl) {
+      // 設定済みなら起動時にバックグラウンドで双方向同期
+      syncBidirectional(true);
+    }
 
     if (decks[activeMode].cards.length === 0) {
       if (decks.sentence.cards.length > 0) {
         activeMode = "sentence";
         updateModeUI();
         switchTab("study");
-      } else {
+      } else if (!gasUrl) {
         switchTab("input");
+      } else {
+        switchTab("study");
       }
     } else {
       switchTab("study");
@@ -256,12 +386,18 @@
       const rawV2 = localStorage.getItem(STORAGE_KEY);
       if (rawV2) {
         const data = JSON.parse(rawV2);
-        if (data.activeMode === "word" || data.activeMode === "sentence") {
-          activeMode = data.activeMode;
-        }
+        if (data.activeMode === "word" || data.activeMode === "sentence") activeMode = data.activeMode;
         if (typeof data.alwaysShowReading === "boolean") {
           alwaysShowReading = data.alwaysShowReading;
           chkAlwaysShowReading.checked = alwaysShowReading;
+        }
+        if (typeof data.gasUrl === "string") {
+          gasUrl = data.gasUrl;
+          inputGasUrl.value = gasUrl;
+        }
+        if (typeof data.autoSync === "boolean") {
+          autoSync = data.autoSync;
+          chkAutoSync.checked = autoSync;
         }
         if (data.wordInputs) {
           inputWordZh.value = data.wordInputs.zh || "";
@@ -269,28 +405,29 @@
           inputWordKatakana.value = data.wordInputs.katakana || "";
           inputWordPos.value = data.wordInputs.pos || "";
           inputWordJa.value = data.wordInputs.ja || "";
-          if (typeof data.wordInputs.ignoreEmpty === "boolean") {
-            chkWordIgnoreEmpty.checked = data.wordInputs.ignoreEmpty;
-          }
+          if (typeof data.wordInputs.ignoreEmpty === "boolean") chkWordIgnoreEmpty.checked = data.wordInputs.ignoreEmpty;
         }
         if (data.sentenceInputs) {
           inputSentenceZh.value = data.sentenceInputs.zh || "";
           inputSentenceJa.value = data.sentenceInputs.ja || "";
-          if (typeof data.sentenceInputs.ignoreEmpty === "boolean") {
-            chkSentenceIgnoreEmpty.checked = data.sentenceInputs.ignoreEmpty;
-          }
+          if (typeof data.sentenceInputs.ignoreEmpty === "boolean") chkSentenceIgnoreEmpty.checked = data.sentenceInputs.ignoreEmpty;
         }
         if (Array.isArray(data.wordCards)) {
           decks.word.cards = data.wordCards.map((c) => ({
             ...c,
-            pos: window.ZhDict ? window.ZhDict.normalizePos(c.pos) : c.pos || "その他"
+            pos: window.ZhDict ? window.ZhDict.normalizePos(c.pos) : c.pos || "その他",
+            updatedAt: Number(c.updatedAt) || 0
           }));
         }
-        if (Array.isArray(data.sentenceCards)) decks.sentence.cards = data.sentenceCards;
+        if (Array.isArray(data.sentenceCards)) {
+          decks.sentence.cards = data.sentenceCards.map((c) => ({
+            ...c,
+            updatedAt: Number(c.updatedAt) || 0
+          }));
+        }
         return;
       }
 
-      // v1 からの移行
       const rawV1 = localStorage.getItem(LEGACY_STORAGE_KEY);
       if (rawV1) {
         const v1 = JSON.parse(rawV1);
@@ -309,6 +446,8 @@
       const payload = {
         activeMode,
         alwaysShowReading,
+        gasUrl,
+        autoSync,
         wordInputs: {
           zh: inputWordZh.value,
           pinyin: inputWordPinyin.value,
@@ -348,7 +487,6 @@
 
     badgeWordCount.textContent = String(decks.word.cards.length);
     badgeSentenceCount.textContent = String(decks.sentence.cards.length);
-
     chkUnmasteredOnly.checked = decks[activeMode].unmasteredOnly;
 
     if (activeTab === "study") {
@@ -358,21 +496,24 @@
 
   function switchTab(tab) {
     activeTab = tab;
-    const isStudy = tab === "study";
-    tabStudy.classList.toggle("active", isStudy);
-    tabInput.classList.toggle("active", !isStudy);
-    tabStudy.setAttribute("aria-selected", String(isStudy));
-    tabInput.setAttribute("aria-selected", String(!isStudy));
+    tabStudy.classList.toggle("active", tab === "study");
+    tabInput.classList.toggle("active", tab === "input");
+    tabSync.classList.toggle("active", tab === "sync");
 
-    viewStudy.classList.toggle("active", isStudy);
-    viewInput.classList.toggle("active", !isStudy);
+    tabStudy.setAttribute("aria-selected", String(tab === "study"));
+    tabInput.setAttribute("aria-selected", String(tab === "input"));
+    tabSync.setAttribute("aria-selected", String(tab === "sync"));
 
-    if (isStudy) {
+    viewStudy.classList.toggle("active", tab === "study");
+    viewInput.classList.toggle("active", tab === "input");
+    viewSync.classList.toggle("active", tab === "sync");
+
+    if (tab === "study") {
       renderStudyView();
     }
   }
 
-  // --- Parsing Helpers ---
+  // --- Parsing & Input Helpers ---
   function parseLines(text, ignoreEmpty) {
     const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     const lines = normalized.split("\n").map((line) => line.trim());
@@ -382,10 +523,22 @@
   function showNotice(el, message) {
     el.textContent = message;
     setTimeout(() => {
-      if (el.textContent === message) {
-        el.textContent = "";
-      }
+      if (el.textContent === message) el.textContent = "";
     }, 3000);
+  }
+
+  function syncTextareasFromCards() {
+    inputWordZh.value = decks.word.cards.map((c) => c.zh).join("\n");
+    inputWordPinyin.value = decks.word.cards.map((c) => c.pinyin || "").join("\n");
+    inputWordKatakana.value = decks.word.cards.map((c) => c.katakana || "").join("\n");
+    inputWordPos.value = decks.word.cards.map((c) => c.pos || "その他").join("\n");
+    inputWordJa.value = decks.word.cards.map((c) => c.ja || "").join("\n");
+
+    inputSentenceZh.value = decks.sentence.cards.map((c) => c.zh).join("\n");
+    inputSentenceJa.value = decks.sentence.cards.map((c) => c.ja || "").join("\n");
+
+    updateWordInputStats();
+    updateSentenceInputStats();
   }
 
   // --- Word Input Logic ---
@@ -437,25 +590,12 @@
       if (w && window.ZhDict) {
         const entry = window.ZhDict.lookupWord(w);
         if (entry) {
-          if (!p && entry.pinyin) {
-            p = entry.pinyin;
-            filledCount++;
-          }
-          if (!k && entry.katakana) {
-            k = entry.katakana;
-            filledCount++;
-          }
-          if (!ps && entry.pos) {
-            ps = entry.pos;
-            filledCount++;
-          }
-          if (!j && entry.ja) {
-            j = entry.ja;
-            filledCount++;
-          }
+          if (!p && entry.pinyin) { p = entry.pinyin; filledCount++; }
+          if (!k && entry.katakana) { k = entry.katakana; filledCount++; }
+          if (!ps && entry.pos) { ps = entry.pos; filledCount++; }
+          if (!j && entry.ja) { j = entry.ja; filledCount++; }
         }
       }
-
       if (p && !k && window.ZhDict) {
         k = window.ZhDict.pinyinToKatakana(p);
         if (k) filledCount++;
@@ -473,10 +613,7 @@
     inputWordJa.value = jaLines.join("\n");
     updateWordInputStats();
     saveToStorage();
-    showNotice(
-      wordSavedNotice,
-      filledCount > 0 ? `${filledCount}箇所を自動補完しました` : "補完できる項目がありませんでした"
-    );
+    showNotice(wordSavedNotice, filledCount > 0 ? `${filledCount}箇所を自動補完しました` : "補完できる項目がありませんでした");
   }
 
   function extractWordsFromSentenceInput() {
@@ -486,7 +623,6 @@
       return;
     }
     const extracted = window.ZhDict.extractWordsFromSentences(sentences);
-    // 品詞順（動詞 → 形容詞 → 名詞 → その他）に並べて見やすくする
     const posOrder = { "動詞": 1, "形容詞": 2, "名詞": 3, "その他": 4 };
     extracted.sort((a, b) => (posOrder[a.pos] || 9) - (posOrder[b.pos] || 9));
 
@@ -513,11 +649,12 @@
     const jaLines = parseLines(inputWordJa.value, ignore);
 
     const maxLen = Math.max(zhLines.length, jaLines.length);
-    const prevStatusMap = new Map();
+    const prevMap = new Map();
     for (const c of decks.word.cards) {
-      prevStatusMap.set(`${c.zh}\u0000${c.ja}`, c.status);
+      prevMap.set(c.zh, c);
     }
 
+    const now = Date.now();
     const nextCards = [];
     for (let i = 0; i < maxLen; i++) {
       const zh = zhLines[i] || "";
@@ -528,7 +665,6 @@
       let katakana = kataLines[i] || "";
       let rawPos = posLines[i] || "";
 
-      // 辞書にあれば補完
       if (zh && window.ZhDict) {
         const entry = window.ZhDict.lookupWord(zh);
         if (entry) {
@@ -537,13 +673,12 @@
           if (!rawPos) rawPos = entry.pos;
         }
       }
-
       if (!katakana && pinyin && window.ZhDict) {
         katakana = window.ZhDict.pinyinToKatakana(pinyin);
       }
 
       const pos = window.ZhDict ? window.ZhDict.normalizePos(rawPos) : rawPos || "その他";
-      const key = `${zh}\u0000${ja}`;
+      const prev = prevMap.get(zh);
       nextCards.push({
         id: i,
         zh: zh || "（中国語未入力）",
@@ -551,7 +686,8 @@
         katakana,
         pos,
         ja: ja || "（日本語訳未入力）",
-        status: prevStatusMap.get(key) || "new"
+        status: prev ? prev.status : "new",
+        updatedAt: prev ? prev.updatedAt || now : now
       });
     }
 
@@ -562,6 +698,10 @@
     rebuildDeck("word", false);
     switchMode("word");
     switchTab("study");
+
+    if (gasUrl && autoSync) {
+      pushToSheet(true);
+    }
   }
 
   // --- Sentence Input Logic ---
@@ -592,22 +732,24 @@
     const jaLines = parseLines(inputSentenceJa.value, ignore);
     const maxLen = Math.max(zhLines.length, jaLines.length);
 
-    const prevStatusMap = new Map();
+    const prevMap = new Map();
     for (const c of decks.sentence.cards) {
-      prevStatusMap.set(`${c.zh}\u0000${c.ja}`, c.status);
+      prevMap.set(c.zh, c);
     }
 
+    const now = Date.now();
     const nextCards = [];
     for (let i = 0; i < maxLen; i++) {
       const zh = zhLines[i] || "";
       const ja = jaLines[i] || "";
       if (!zh && !ja) continue;
-      const key = `${zh}\u0000${ja}`;
+      const prev = prevMap.get(zh);
       nextCards.push({
         id: i,
         zh: zh || "（中国語未入力）",
         ja: ja || "（日本語訳未入力）",
-        status: prevStatusMap.get(key) || "new"
+        status: prev ? prev.status : "new",
+        updatedAt: prev ? prev.updatedAt || now : now
       });
     }
 
@@ -616,15 +758,16 @@
     rebuildDeck("sentence", false);
     switchMode("sentence");
     switchTab("study");
+
+    if (gasUrl && autoSync) {
+      pushToSheet(true);
+    }
   }
 
   // --- POS Filter & Deck Building ---
   function updatePosCounts() {
     const cards = decks.word.cards;
-    let verb = 0;
-    let adj = 0;
-    let noun = 0;
-    let other = 0;
+    let verb = 0, adj = 0, noun = 0, other = 0;
     for (const c of cards) {
       const p = c.pos || "その他";
       if (p === "動詞") verb++;
@@ -713,8 +856,8 @@
       studyWorkspace.classList.add("hidden");
       emptyTitle.textContent = isWord ? "まだ単語カードがありません" : "まだ文章カードがありません";
       emptyDesc.textContent = isWord
-        ? "「入力・編集」タブから単語・発音記号・カタカナ・品詞・日本語訳を入力するか、文章テロップから抽出してください。"
-        : "「入力・編集」タブから中国語のテロップと日本語訳を入力してカードを作成してください。";
+        ? "「入力・編集」タブから入力するか、「シート同期」からスプレッドシートの単語を読み込んでください。"
+        : "「入力・編集」タブからテロップを入力するか、「シート同期」から読み込んでください。";
       return;
     }
 
@@ -780,7 +923,6 @@
       cardPosPill.classList.add("hidden");
     }
 
-    // 発音記号（ピンイン）とカタカナ
     let pinyinStr = card.pinyin || "";
     let kataStr = card.katakana || "";
     if (!isWord) {
@@ -863,8 +1005,15 @@
     const deck = decks[activeMode];
     if (deck.deckIndices.length === 0) return;
     const cardIdx = deck.deckIndices[deck.currentPos];
-    deck.cards[cardIdx].status = status;
+    const card = deck.cards[cardIdx];
+    const now = Date.now();
+    card.status = status;
+    card.updatedAt = now;
     saveToStorage();
+
+    if (gasUrl && autoSync) {
+      sendStatusUpdateToSheet(activeMode, card);
+    }
 
     if (deck.unmasteredOnly && status === "mastered") {
       deck.deckIndices.splice(deck.currentPos, 1);
@@ -900,6 +1049,200 @@
     window.speechSynthesis.speak(utterance);
   }
 
+  // --- Google Sheets Sync Logic ---
+  function updateSyncUI(badgeText = "", isError = false) {
+    const configured = Boolean(gasUrl);
+    syncDot.classList.toggle("hidden", !configured);
+    btnQuickSync.classList.toggle("hidden", !configured);
+    syncStatusPill.textContent = configured ? "接続設定済み" : "未設定";
+    syncStatusPill.className = configured ? "sync-status-pill connected" : "sync-status-pill";
+    if (isError) syncStatusPill.className = "sync-status-pill error";
+
+    if (configured && badgeText) {
+      studySyncBadge.textContent = badgeText;
+      studySyncBadge.classList.remove("hidden", "error");
+      if (isError) studySyncBadge.classList.add("error");
+    } else if (configured) {
+      studySyncBadge.textContent = "☁️ 同期ON";
+      studySyncBadge.classList.remove("hidden", "error");
+    } else {
+      studySyncBadge.classList.add("hidden");
+    }
+  }
+
+  function setSyncLog(message, type = "info") {
+    syncLog.textContent = message;
+    syncLog.className = `sync-log ${type === "success" ? "success" : type === "error" ? "error" : ""}`;
+    syncLog.classList.remove("hidden");
+  }
+
+  async function gasGet() {
+    const res = await fetch(gasUrl, { method: "GET", redirect: "follow" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "取得に失敗しました");
+    return data;
+  }
+
+  async function gasPost(payload) {
+    // CORSプリフライト回避のため text/plain を使用
+    const res = await fetch(gasUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+      redirect: "follow"
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "保存に失敗しました");
+    return data;
+  }
+
+  async function sendStatusUpdateToSheet(type, card) {
+    if (!gasUrl) return;
+    try {
+      updateSyncUI("☁️ 保存中...");
+      await gasPost({
+        action: "updateStatus",
+        type,
+        zh: card.zh,
+        status: card.status,
+        updatedAt: card.updatedAt,
+        card
+      });
+      updateSyncUI("☁️ 同期済み");
+    } catch (err) {
+      console.warn("ステータス自動同期エラー:", err);
+      updateSyncUI("☁️ 同期エラー", true);
+    }
+  }
+
+  function mergeCardLists(localList, remoteList, isWord) {
+    const map = new Map();
+    const order = [];
+
+    for (const r of remoteList) {
+      const item = {
+        ...r,
+        pos: isWord ? (window.ZhDict ? window.ZhDict.normalizePos(r.pos) : r.pos || "その他") : undefined,
+        updatedAt: Number(r.updatedAt) || 0
+      };
+      map.set(item.zh, item);
+      order.push(item.zh);
+    }
+
+    for (const l of localList) {
+      const existing = map.get(l.zh);
+      if (!existing) {
+        map.set(l.zh, { ...l });
+        order.push(l.zh);
+      } else {
+        // updatedAt が新しい方のステータスを優先
+        const localTime = Number(l.updatedAt) || 0;
+        const remoteTime = Number(existing.updatedAt) || 0;
+        if (localTime > remoteTime) {
+          existing.status = l.status;
+          existing.updatedAt = localTime;
+        }
+        // メタ情報は空欄を補う
+        if (isWord) {
+          if (!existing.pinyin && l.pinyin) existing.pinyin = l.pinyin;
+          if (!existing.katakana && l.katakana) existing.katakana = l.katakana;
+          if ((!existing.pos || existing.pos === "その他") && l.pos) existing.pos = l.pos;
+        }
+        if (!existing.ja && l.ja) existing.ja = l.ja;
+      }
+    }
+
+    return order.map((zh, idx) => ({ ...map.get(zh), id: idx }));
+  }
+
+  async function syncBidirectional(silent = false) {
+    if (!gasUrl) {
+      if (!silent) setSyncLog("先にGoogle Apps ScriptのURLを入力・保存してください。", "error");
+      return;
+    }
+    try {
+      updateSyncUI("🔄 同期中...");
+      if (!silent) setSyncLog("スプレッドシートと双方向同期しています...");
+
+      const remote = await gasGet();
+      const mergedWords = mergeCardLists(decks.word.cards, remote.words || [], true);
+      const mergedSentences = mergeCardLists(decks.sentence.cards, remote.sentences || [], false);
+
+      decks.word.cards = mergedWords;
+      decks.sentence.cards = mergedSentences;
+      syncTextareasFromCards();
+      saveToStorage();
+      rebuildDeck("word", false);
+      rebuildDeck("sentence", false);
+
+      await gasPost({
+        action: "saveAll",
+        words: mergedWords,
+        sentences: mergedSentences
+      });
+
+      updateSyncUI("☁️ 同期済み");
+      if (!silent) {
+        setSyncLog(`同期完了！（単語 ${mergedWords.length}件・文章 ${mergedSentences.length}件）`, "success");
+      }
+    } catch (err) {
+      updateSyncUI("☁️ 同期エラー", true);
+      if (!silent) setSyncLog(`同期に失敗しました: ${err.message}`, "error");
+    }
+  }
+
+  async function pullFromSheet() {
+    if (!gasUrl) {
+      setSyncLog("先にGoogle Apps ScriptのURLを入力・保存してください。", "error");
+      return;
+    }
+    try {
+      updateSyncUI("⬇️ 読込中...");
+      setSyncLog("スプレッドシートからデータを読み込んでいます...");
+      const remote = await gasGet();
+      decks.word.cards = (remote.words || []).map((w, idx) => ({
+        ...w,
+        id: idx,
+        pos: window.ZhDict ? window.ZhDict.normalizePos(w.pos) : w.pos || "その他"
+      }));
+      decks.sentence.cards = (remote.sentences || []).map((s, idx) => ({ ...s, id: idx }));
+      syncTextareasFromCards();
+      saveToStorage();
+      rebuildDeck("word", false);
+      rebuildDeck("sentence", false);
+      updateSyncUI("☁️ 同期済み");
+      setSyncLog(`読み込み完了！（単語 ${decks.word.cards.length}件・文章 ${decks.sentence.cards.length}件）`, "success");
+    } catch (err) {
+      updateSyncUI("☁️ 同期エラー", true);
+      setSyncLog(`読み込みに失敗しました: ${err.message}`, "error");
+    }
+  }
+
+  async function pushToSheet(silent = false) {
+    if (!gasUrl) {
+      if (!silent) setSyncLog("先にGoogle Apps ScriptのURLを入力・保存してください。", "error");
+      return;
+    }
+    try {
+      updateSyncUI("⬆️ 保存中...");
+      if (!silent) setSyncLog("スプレッドシートへ保存しています...");
+      await gasPost({
+        action: "saveAll",
+        words: decks.word.cards,
+        sentences: decks.sentence.cards
+      });
+      updateSyncUI("☁️ 同期済み");
+      if (!silent) {
+        setSyncLog(`スプレッドシートへ保存しました！（単語 ${decks.word.cards.length}件・文章 ${decks.sentence.cards.length}件）`, "success");
+      }
+    } catch (err) {
+      updateSyncUI("☁️ 同期エラー", true);
+      if (!silent) setSyncLog(`保存に失敗しました: ${err.message}`, "error");
+    }
+  }
+
   function loadWordSample() {
     inputWordZh.value = SAMPLE_WORDS.zh;
     inputWordPinyin.value = SAMPLE_WORDS.pinyin;
@@ -927,6 +1270,7 @@
     modeSentenceBtn.addEventListener("click", () => switchMode("sentence"));
     tabStudy.addEventListener("click", () => switchTab("study"));
     tabInput.addEventListener("click", () => switchTab("input"));
+    tabSync.addEventListener("click", () => switchTab("sync"));
 
     btnGoInput.addEventListener("click", () => switchTab("input"));
     btnLoadSampleEmpty.addEventListener("click", () => {
@@ -939,7 +1283,6 @@
       }
     });
 
-    // POS filter clicks
     posFilterButtons.forEach((btn) => {
       btn.addEventListener("click", () => {
         activePosFilter = btn.dataset.pos || "all";
@@ -948,17 +1291,10 @@
       });
     });
 
-    // Word input events
     [inputWordZh, inputWordPinyin, inputWordKatakana, inputWordPos, inputWordJa].forEach((el) => {
-      el.addEventListener("input", () => {
-        updateWordInputStats();
-        saveToStorage();
-      });
+      el.addEventListener("input", () => { updateWordInputStats(); saveToStorage(); });
     });
-    chkWordIgnoreEmpty.addEventListener("change", () => {
-      updateWordInputStats();
-      saveToStorage();
-    });
+    chkWordIgnoreEmpty.addEventListener("change", () => { updateWordInputStats(); saveToStorage(); });
     btnExtractFromSentences.addEventListener("click", extractWordsFromSentenceInput);
     btnAutoFillReading.addEventListener("click", autoFillWordReadings);
     btnLoadWordSample.addEventListener("click", loadWordSample);
@@ -973,17 +1309,10 @@
     });
     btnCreateWordCards.addEventListener("click", buildWordCards);
 
-    // Sentence input events
     [inputSentenceZh, inputSentenceJa].forEach((el) => {
-      el.addEventListener("input", () => {
-        updateSentenceInputStats();
-        saveToStorage();
-      });
+      el.addEventListener("input", () => { updateSentenceInputStats(); saveToStorage(); });
     });
-    chkSentenceIgnoreEmpty.addEventListener("change", () => {
-      updateSentenceInputStats();
-      saveToStorage();
-    });
+    chkSentenceIgnoreEmpty.addEventListener("change", () => { updateSentenceInputStats(); saveToStorage(); });
     btnLoadSentenceSample.addEventListener("click", loadSentenceSample);
     btnClearSentenceInputs.addEventListener("click", () => {
       inputSentenceZh.value = "";
@@ -994,7 +1323,6 @@
     btnSendToWordExtractor.addEventListener("click", extractWordsFromSentenceInput);
     btnCreateSentenceCards.addEventListener("click", buildSentenceCards);
 
-    // Study controls
     btnReveal.addEventListener("click", toggleReveal);
     btnHintReading.addEventListener("click", toggleReadingHint);
     btnPrev.addEventListener("click", goPrev);
@@ -1002,49 +1330,75 @@
     btnAgain.addEventListener("click", () => markStatus("again"));
     btnMastered.addEventListener("click", () => markStatus("mastered"));
     btnSpeak.addEventListener("click", speakCurrentChinese);
+    btnQuickSync.addEventListener("click", () => syncBidirectional(false));
 
     chkAlwaysShowReading.addEventListener("change", (e) => {
       alwaysShowReading = e.target.checked;
       saveToStorage();
       renderStudyView();
     });
-
     chkUnmasteredOnly.addEventListener("change", (e) => {
       decks[activeMode].unmasteredOnly = e.target.checked;
       rebuildDeck(activeMode, false);
     });
-
     btnShuffle.addEventListener("click", () => rebuildDeck(activeMode, true));
     btnResetOrder.addEventListener("click", () => rebuildDeck(activeMode, false));
 
-    // Keyboard shortcuts
+    // Sync controls
+    btnSaveGasUrl.addEventListener("click", () => {
+      gasUrl = inputGasUrl.value.trim();
+      saveToStorage();
+      updateSyncUI();
+      if (gasUrl) {
+        setSyncLog("URLを保存しました。「双方向同期」を押して接続を確認してください。", "success");
+      } else {
+        setSyncLog("同期URLをクリアしました。", "info");
+      }
+    });
+    chkAutoSync.addEventListener("change", (e) => {
+      autoSync = e.target.checked;
+      saveToStorage();
+    });
+    btnSyncBidirectional.addEventListener("click", () => syncBidirectional(false));
+    btnSyncPull.addEventListener("click", pullFromSheet);
+    btnSyncPush.addEventListener("click", () => pushToSheet(false));
+
+    btnCopyShareUrl.addEventListener("click", async () => {
+      if (!gasUrl) {
+        showNotice(shareUrlNotice, "先に上の欄にGASのURLを保存してください");
+        return;
+      }
+      const base = `${window.location.origin}${window.location.pathname}`;
+      const shareUrl = `${base}?sync=${encodeURIComponent(gasUrl)}`;
+      try {
+        await navigator.clipboard.writeText(shareUrl);
+        showNotice(shareUrlNotice, "同期設定付きURLをコピーしました！");
+      } catch {
+        prompt("このURLをコピーしてiPhone/iPadで開いてください:", shareUrl);
+      }
+    });
+
+    btnCopyGasCode.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(GAS_TEMPLATE_CODE);
+        showNotice(gasCopyNotice, "GASコードをコピーしました！");
+      } catch {
+        prompt("GASコードをコピーしてください:", GAS_TEMPLATE_CODE);
+      }
+    });
+
     document.addEventListener("keydown", (e) => {
       if (activeTab !== "study" || decks[activeMode].cards.length === 0) return;
       const tag = e.target.tagName;
       if (tag === "TEXTAREA" || tag === "INPUT") return;
 
-      if (e.code === "Space") {
-        e.preventDefault();
-        toggleReveal();
-      } else if (e.key.toLowerCase() === "h") {
-        e.preventDefault();
-        toggleReadingHint();
-      } else if (e.code === "ArrowLeft") {
-        e.preventDefault();
-        goPrev();
-      } else if (e.code === "ArrowRight") {
-        e.preventDefault();
-        goNext();
-      } else if (e.key === "1") {
-        e.preventDefault();
-        markStatus("again");
-      } else if (e.key === "2") {
-        e.preventDefault();
-        markStatus("mastered");
-      } else if (e.key.toLowerCase() === "a") {
-        e.preventDefault();
-        speakCurrentChinese();
-      }
+      if (e.code === "Space") { e.preventDefault(); toggleReveal(); }
+      else if (e.key.toLowerCase() === "h") { e.preventDefault(); toggleReadingHint(); }
+      else if (e.code === "ArrowLeft") { e.preventDefault(); goPrev(); }
+      else if (e.code === "ArrowRight") { e.preventDefault(); goNext(); }
+      else if (e.key === "1") { e.preventDefault(); markStatus("again"); }
+      else if (e.key === "2") { e.preventDefault(); markStatus("mastered"); }
+      else if (e.key.toLowerCase() === "a") { e.preventDefault(); speakCurrentChinese(); }
     });
   }
 
